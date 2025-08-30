@@ -31,7 +31,7 @@ __global__ void init_random_complex(cuda_complex* data, curandState* states, int
     float imag = 2.0f * curand_uniform(&states[id]) - 1.0f;
 
     // Store as cuComplex
-    data[id] = make_cuComplex(real, imag);
+    data[id] = make_cuDoubleComplex(real, imag);
 }
 
 
@@ -50,6 +50,7 @@ void streams_and_handles(const int n_streams) {
   cuda_complex* g_stij;
   cuda_complex* VQ;
   cuda_complex* Y1;
+  cuda_complex* Y2;
   if (cudaMalloc(&Pqk0, ntnaux2 * sizeof(cuda_complex)) != cudaSuccess)
     throw std::runtime_error("failure allocating Pq0");
   if (cudaMalloc(&g_stij, ns * ntnao2 * sizeof(cuda_complex)) != cudaSuccess)
@@ -58,6 +59,8 @@ void streams_and_handles(const int n_streams) {
     throw std::runtime_error("failure allocating VQ on device");
   if (cudaMalloc(&Y1, nauxnao2 * sizeof(cuda_complex)) != cudaSuccess)
     throw std::runtime_error("failure allocating Y1 on device");
+  if (cudaMalloc(&Y2, nauxnao2 * sizeof(cuda_complex)) != cudaSuccess)
+    throw std::runtime_error("failure allocating Y2 on device");
 
   // Random initialize
   curandState* pq_state;
@@ -73,6 +76,8 @@ void streams_and_handles(const int n_streams) {
     throw std::runtime_error("failure allocating VQ on device");
   if (cudaMalloc(&y1_state, nauxnao2 * sizeof(curandState)) != cudaSuccess)
     throw std::runtime_error("failure allocating Y1 on device");
+  if (cudaMalloc(&y2_state, nauxnao2 * sizeof(curandState)) != cudaSuccess)
+    throw std::runtime_error("failure allocating Y2 on device");
 
   int threads = 256;
   int blocks = (ntnaux2 + threads - 1) / threads;
@@ -83,6 +88,7 @@ void streams_and_handles(const int n_streams) {
   init_random_complex<<<blocks, threads>>>(VQ, vq_state, nauxnao2, time(NULL));
   blocks = (nauxnao2 + threads - 1) / threads;
   init_random_complex<<<blocks, threads>>>(Y1, y1_state, nauxnao2, time(NULL));
+  init_random_complex<<<blocks, threads>>>(Y2, y2_state, nauxnao2, time(NULL));
   std::cout << "initialized completed" << std::endl;
 
 
@@ -92,8 +98,29 @@ void streams_and_handles(const int n_streams) {
   for (int i=0; i<n_streams; i++) {
     if (cublasCreate(&_handles[i]) != CUBLAS_STATUS_SUCCESS)
       throw std::runtime_error("Rank " + std::to_string(i) + ": error initializing cublas");
-    if (cuStreamCreate(&_streams[i]) != CUBLAS_STATUS_SUCCESS)
+    if (cudaStreamCreate(&_streams[i]) != CUBLAS_STATUS_SUCCESS)
       throw std::runtime_error("Rank " + std::to_string(i) + ": error initializing cuda Stream");
+    cublasSetStream(_handles[i], _streams[i]);
+  }
+
+
+  // Perform Batched DGEMM
+  cuda_complex  one     = cu_type_map<cxx_complex>::cast(1., 0.);
+  cuda_complex  zero    = cu_type_map<cxx_complex>::cast(0., 0.);
+  cuda_complex  m1      = cu_type_map<cxx_complex>::cast(-1., 0.);
+  // cuda_complex* Y1t_Qin = X1t_tmQ_;  // name change, reuse memory
+  // cuda_complex* Y2t_inP = X2t_Ptm_;  // name change, reuse memory
+  size_t nauxnao = naux * nao;
+  size_t nao2 = nao * nao;
+  int st0 = 0;
+  int st1 = 1;
+  if (GEMM_STRIDED_BATCHED(_handles[0], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g_stij + st0 * nao2, nao,
+                          nao2, VQ, nao, 0, &zero, Y1, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
+    throw std::runtime_error("GEMM_STRIDED_BATCHED fails on gw_qkpt.compute_second_tau_contraction().");
+  }
+  if (GEMM_STRIDED_BATCHED(_handles[1], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g_stij + st1 * nao2, nao,
+                          nao2, VQ, nao, 0, &zero, Y2, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
+    throw std::runtime_error("GEMM_STRIDED_BATCHED fails on gw_qkpt.compute_second_tau_contraction().");
   }
 }
 
