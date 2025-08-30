@@ -118,16 +118,28 @@ void streams_and_handles() {
   // cuda_complex* Y2t_inP = X2t_Ptm_;  // name change, reuse memory
   size_t nauxnao = naux * nao;
   size_t nao2 = nao * nao;
-  int st0 = 0;
-  int st1 = 1;
-  if (GEMM_STRIDED_BATCHED(_handles[0], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g_stij + st0 * nao2, nao,
-                          nao2, VQ, nao, 0, &zero, Y1, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
-    throw std::runtime_error("GEMM_STRIDED_BATCHED fails on gw_qkpt.compute_second_tau_contraction().");
+  PUSH_RANGE("GEMM 1", 4);
+  for (int s = 0; s < ns_; ++s) {
+    for (int t = 0; t < nt_; t += nt_batch_) {
+      int st0      = s * nts + t;
+      if (GEMM_STRIDED_BATCHED(_handles[0], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g_stij + st0 * nao2, nao,
+                              nao2, VQ, nao, 0, &zero, Y1, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
+        throw std::runtime_error("GEMM_STRIDED_BATCHED fails on gw_qkpt.compute_second_tau_contraction().");
+      }
+    }
   }
-  if (GEMM_STRIDED_BATCHED(_handles[1], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g_stij + st1 * nao2, nao,
-                          nao2, VQ, nao, 0, &zero, Y2, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
-    throw std::runtime_error("GEMM_STRIDED_BATCHED fails on gw_qkpt.compute_second_tau_contraction().");
+  POP_RANGE;
+  PUSH_RANGE("GEMM 2", 4);
+  for (int s = 0; s < ns_; ++s) {
+    for (int t = 0; t < nt_; t += nt_batch_) {
+      int st1      = s * nts + t;
+      if (GEMM_STRIDED_BATCHED(_handles[1], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g_stij + st1 * nao2, nao,
+                              nao2, VQ, nao, 0, &zero, Y2, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
+        throw std::runtime_error("GEMM_STRIDED_BATCHED fails on gw_qkpt.compute_second_tau_contraction().");
+      }
+    }
   }
+  POP_RANGE;
   POP_RANGE;
 }
 
