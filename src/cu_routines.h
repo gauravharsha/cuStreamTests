@@ -15,4 +15,4 @@ using cuda_complex = cu_type_map<std::complex<double>>::cuda_type;
 
 
 __global__ void init_random_complex(cuda_complex* data, curandState* states, int n, unsigned long seed);
-void streams_and_handles(const int n_streams);
+void streams_and_handles();

@@ -10,7 +10,7 @@ int main() {
   check_for_cuda(num_devices);
 
   // Run
-  streams_and_handles(2);
+  streams_and_handles();
 
   // Perform kernel
   return 0;

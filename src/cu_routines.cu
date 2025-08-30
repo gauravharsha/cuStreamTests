@@ -35,7 +35,9 @@ __global__ void init_random_complex(cuda_complex* data, curandState* states, int
 }
 
 
-void streams_and_handles(const int n_streams) {
+void streams_and_handles() {
+  const int n_streams = 2;
+  PUSH_RANGE("Initialize", 0);
   const size_t ns = 2;
   const size_t nao = 54;
   const size_t naux = 638;
@@ -43,7 +45,6 @@ void streams_and_handles(const int n_streams) {
   size_t ntnaux2 = nts * naux * naux;
   size_t ntnao2 = nts * nao * nao;
   size_t nauxnao2 = naux * nao * nao;
-
 
   // allocate memory for stuff
   cuda_complex* Pqk0; // polarization
@@ -90,9 +91,11 @@ void streams_and_handles(const int n_streams) {
   init_random_complex<<<blocks, threads>>>(Y1, y1_state, nauxnao2, time(NULL));
   init_random_complex<<<blocks, threads>>>(Y2, y2_state, nauxnao2, time(NULL));
   std::cout << "initialized completed" << std::endl;
+  POP_RANGE;
 
 
   // Create streams and handles
+  PUSH_RANGE("Create 2 streams and handles", 1);
   std::vector<cudaStream_t> _streams(n_streams);
   std::vector<cublasHandle_t> _handles(n_streams);
   for (int i=0; i<n_streams; i++) {
@@ -102,9 +105,11 @@ void streams_and_handles(const int n_streams) {
       throw std::runtime_error("Rank " + std::to_string(i) + ": error initializing cuda Stream");
     cublasSetStream(_handles[i], _streams[i]);
   }
+  POP_RANGE;
 
 
   // Perform Batched DGEMM
+  PUSH_RANGE("Perform 2 GEMM calls", 3);
   cuda_complex  one     = cu_type_map<cxx_complex>::cast(1., 0.);
   cuda_complex  zero    = cu_type_map<cxx_complex>::cast(0., 0.);
   cuda_complex  m1      = cu_type_map<cxx_complex>::cast(-1., 0.);
@@ -122,5 +127,6 @@ void streams_and_handles(const int n_streams) {
                           nao2, VQ, nao, 0, &zero, Y2, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
     throw std::runtime_error("GEMM_STRIDED_BATCHED fails on gw_qkpt.compute_second_tau_contraction().");
   }
+  POP_RANGE;
 }
 
