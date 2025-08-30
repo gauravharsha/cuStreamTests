@@ -119,8 +119,8 @@ void streams_and_handles() {
   size_t nauxnao = naux * nao;
   size_t nao2 = nao * nao;
   PUSH_RANGE("GEMM 1", 4);
-  for (int s = 0; s < ns_; ++s) {
-    for (int t = 0; t < nt_; t += nt_batch_) {
+  for (int s = 0; s < ns; ++s) {
+    for (int t = 0; t < nts; t += 1) {
       int st0      = s * nts + t;
       if (GEMM_STRIDED_BATCHED(_handles[0], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g_stij + st0 * nao2, nao,
                               nao2, VQ, nao, 0, &zero, Y1, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
@@ -130,8 +130,8 @@ void streams_and_handles() {
   }
   POP_RANGE;
   PUSH_RANGE("GEMM 2", 4);
-  for (int s = 0; s < ns_; ++s) {
-    for (int t = 0; t < nt_; t += nt_batch_) {
+  for (int s = 0; s < ns; ++s) {
+    for (int t = 0; t < nts; t += 1) {
       int st1      = s * nts + t;
       if (GEMM_STRIDED_BATCHED(_handles[1], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g_stij + st1 * nao2, nao,
                               nao2, VQ, nao, 0, &zero, Y2, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
