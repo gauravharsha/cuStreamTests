@@ -68,6 +68,7 @@ void streams_and_handles() {
   curandState* g_state;
   curandState* vq_state;
   curandState* y1_state;
+  curandState* y2_state;
 
   if (cudaMalloc(&pq_state, ntnaux2 * sizeof(curandState)))
     throw std::runtime_error("failure allocating Pq0");
