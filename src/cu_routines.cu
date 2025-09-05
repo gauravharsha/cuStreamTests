@@ -117,7 +117,7 @@ void streams_and_handles() {
   POP_RANGE;
 
 
-  for (int i=-; i<n_streams; i++) cudaStreamSynchronize(_streams[i]);
+  for (int i=0; i<n_streams; i++) cudaStreamSynchronize(_streams[i]);
   // Perform Batched DGEMM
   PUSH_RANGE("Perform 2 GEMM calls", 3);
   cuda_complex  one     = cu_type_map<cxx_complex>::cast(1., 0.);
@@ -148,7 +148,7 @@ void streams_and_handles() {
       }
     }
   }
-  for (int i=-; i<n_streams; i++) cudaStreamSynchronize(_streams[i]);
+  for (int i=0; i<n_streams; i++) cudaStreamSynchronize(_streams[i]);
   // Synchronize stream
   POP_RANGE;
   POP_RANGE;
