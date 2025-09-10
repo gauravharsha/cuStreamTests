@@ -42,184 +42,151 @@ __global__ void init_random_complex(cuda_complex* data, curandState* states, int
     data[id] = make_cuDoubleComplex(real, imag);
 }
 
+#define CUDA_CHECK(cmd) do { \
+  cudaError_t e = (cmd); \
+  if (e != cudaSuccess) throw std::runtime_error(std::string("CUDA error: ")+cudaGetErrorString(e)); \
+} while(0)
+
+#define CUBLAS_CHECK(cmd) do { \
+  cublasStatus_t s = (cmd); \
+  if (s != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("cuBLAS error"); \
+} while(0)
 
 void streams_and_handles(MPI_Comm comm) {
-  // ---- MPI init/get rank/size (assumes MPI_Init/Finalize handled in main) ----
-  int rank = 0, nprocs = 1;
+  // ---- MPI ranks (world + local) ----
+  int rank=0, nprocs=1;
   MPI_Comm_rank(comm, &rank);
   MPI_Comm_size(comm, &nprocs);
 
-  // Get local rank on the node for correct GPU binding
   MPI_Comm node_comm;
   MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_comm);
-  int local_rank = 0;
+  int local_rank=0;
   MPI_Comm_rank(node_comm, &local_rank);
   MPI_Comm_free(&node_comm);
 
-  // Set NVTX color offset based on rank
-  nvtx_rank_color_offset = rank;
+  // ---- Bind GPU by local rank (respects CUDA_VISIBLE_DEVICES) ----
+  int nDevices=0;
+  CUDA_CHECK(cudaGetDeviceCount(&nDevices));
+  if (nDevices == 0) throw std::runtime_error("No CUDA devices");
+  CUDA_CHECK(cudaSetDevice(local_rank % nDevices));
 
-  // Bind GPU by local_rank (respects CUDA_VISIBLE_DEVICES if set)
-  int nDevices = 0;
-  cudaGetDeviceCount(&nDevices);
-  if (nDevices == 0) {
-    throw std::runtime_error("No CUDA devices visible on this node");
-  }
-  cudaSetDevice(local_rank % nDevices);
-
+  // ---- Problem sizes (same as your example) ----
   const int n_streams = 2;
   PUSH_RANGE("Initialize", 0);
-  const size_t ns = 2;
-  const size_t nao = 54;
+  const size_t ns   = 2;
+  const size_t nao  = 54;
   const size_t naux = 638;
-  const size_t nts = 10;
+  const size_t nts  = 10;
 
-  const size_t ntnaux2 = nts * naux * naux;
-  const size_t ntnao2 = nts * nao * nao;
-  const size_t nauxnao2 = naux * nao * nao;
+  const size_t ntnaux2  = nts * naux * naux;     // (#tau) * naux^2
   const size_t nao2     = nao * nao;
   const size_t nauxnao  = naux * nao;
+  const size_t nauxnao2 = naux * nao * nao;
 
-  // --- decide (s,t) tasks for this rank (round-robin for load balance) ---
-  const int total_tasks = static_cast<int>(ns * nts); // each task is one (s,t)
+  // ---- Task partition: round-robin (good balance) ----
+  const int total_tasks = (int)(ns * nts); // each (s,t) is a task
   std::vector<int> my_tasks;
   my_tasks.reserve((total_tasks + nprocs - 1) / nprocs);
   for (int lin = rank; lin < total_tasks; lin += nprocs) my_tasks.push_back(lin);
   const size_t n_local_tasks = my_tasks.size();
 
-  // allocate memory for stuff
+  // ---- Device allocations: per-rank single set ----
+  cuda_complex *Pqk0=nullptr, *g_stij_local=nullptr, *VQ=nullptr;
+  CUDA_CHECK(cudaMalloc(&Pqk0, ntnaux2 * sizeof(cuda_complex)));
+  CUDA_CHECK(cudaMalloc(&g_stij_local, n_local_tasks * nao2 * sizeof(cuda_complex)));
+  CUDA_CHECK(cudaMalloc(&VQ,   nauxnao2 * sizeof(cuda_complex)));
 
-  cuda_complex* Pqk0 = nullptr;
-  if (cudaMalloc(&Pqk0, ntnaux2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("alloc Pq0");
+  // Double-buffer outputs: one per stream (prevents write hazards)
+  cuda_complex* Y_buf[2] = {nullptr, nullptr};
+  CUDA_CHECK(cudaMalloc(&Y_buf[0], nauxnao2 * sizeof(cuda_complex)));
+  CUDA_CHECK(cudaMalloc(&Y_buf[1], nauxnao2 * sizeof(cuda_complex)));
 
-  // Each rank only needs its local (s,t) slice of g_stij, shape: n_local_tasks * (nao×nao)
-  cuda_complex* g_stij_local = nullptr;
-  if (cudaMalloc(&g_stij_local, n_local_tasks * nao2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("alloc g_stij_local");
+  // ---- RNG states (only for the buffers we own) ----
+  curandState *pq_state=nullptr, *g_state=nullptr, *vq_state=nullptr, *y_state0=nullptr, *y_state1=nullptr;
+  CUDA_CHECK(cudaMalloc(&pq_state, ntnaux2 * sizeof(curandState)));
+  CUDA_CHECK(cudaMalloc(&g_state,  n_local_tasks * nao2 * sizeof(curandState)));
+  CUDA_CHECK(cudaMalloc(&vq_state, nauxnao2 * sizeof(curandState)));
+  CUDA_CHECK(cudaMalloc(&y_state0, nauxnao2 * sizeof(curandState)));
+  CUDA_CHECK(cudaMalloc(&y_state1, nauxnao2 * sizeof(curandState)));
 
-  // VQ can be shared conceptually, but we keep one copy per rank (simple, no comms)
-  cuda_complex* VQ = nullptr;
-  if (cudaMalloc(&VQ, nauxnao2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("alloc VQ");
+  // ---- Random init (rank-unique seed) ----
+  const int threads = 256;
+  unsigned long seed = (unsigned long)time(NULL) + 1337ul * (unsigned long)rank;
 
-  // Output Y for this rank (same shape as VQ since Y = g * VQ)
-  cuda_complex* Y = nullptr;
-  if (cudaMalloc(&Y, nauxnao2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("alloc Y");
-  
-  // Random initialize
-  curandState* pq_state;
-  curandState* g_state;
-  curandState* vq_state;
-  curandState* y_state;
-
-  if (cudaMalloc(&pq_state, ntnaux2 * sizeof(curandState)) != cudaSuccess)
-    throw std::runtime_error("alloc pq_state");
-  if (cudaMalloc(&g_state,  n_local_tasks * nao2 * sizeof(curandState)) != cudaSuccess)
-    throw std::runtime_error("alloc g_state");
-  if (cudaMalloc(&vq_state, nauxnao2 * sizeof(curandState)) != cudaSuccess)
-    throw std::runtime_error("alloc vq_state");
-  if (cudaMalloc(&y_state,  nauxnao2 * sizeof(curandState)) != cudaSuccess)
-    throw std::runtime_error("alloc y_state");
-
-  int threads = 256;
-  int blocks = (ntnaux2 + threads - 1) / threads;
-   unsigned long seed = static_cast<unsigned long>(time(NULL)) + 1337ul * static_cast<unsigned long>(rank);
-
-  // Pqk0_local
-  blocks = (int)((ntnaux2 + threads - 1) / threads);
+  int blocks = (int)((ntnaux2 + threads - 1) / threads);
   init_random_complex<<<blocks, threads>>>(Pqk0, pq_state, ntnaux2, seed);
 
-  // g_stij_local
   const size_t n_local_g_elems = n_local_tasks * nao2;
   blocks = (int)((n_local_g_elems + threads - 1) / threads);
   init_random_complex<<<blocks, threads>>>(g_stij_local, g_state, n_local_g_elems, seed+1);
 
-  // VQ and Y
   blocks = (int)((nauxnao2 + threads - 1) / threads);
-  init_random_complex<<<blocks, threads>>>(VQ, vq_state, nauxnao2, seed+2);
-  init_random_complex<<<blocks, threads>>>(Y,  y_state,  nauxnao2, seed+3);
+  init_random_complex<<<blocks, threads>>>(VQ,      vq_state,  nauxnao2, seed+2);
+  init_random_complex<<<blocks, threads>>>(Y_buf[0], y_state0, nauxnao2, seed+3);
+  init_random_complex<<<blocks, threads>>>(Y_buf[1], y_state1, nauxnao2, seed+4);
 
-  cudaDeviceSynchronize();
-  if (cudaGetLastError() != cudaSuccess) throw std::runtime_error("Initialization kernel failure");
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
   if (rank == 0) std::cout << "initialized completed\n";
   POP_RANGE;
 
-
-  // Create streams and handles
+  // ---- Create NON-BLOCKING streams & 1 handle per stream ----
   PUSH_RANGE("Create streams and handles", 1);
   std::vector<cudaStream_t> streams(n_streams);
   std::vector<cublasHandle_t> handles(n_streams);
-  for (int i = 0; i < n_streams; ++i) {
-    if (cublasCreate(&handles[i]) != CUBLAS_STATUS_SUCCESS)
-      throw std::runtime_error("cublasCreate failed");
-    if (cudaStreamCreate(&streams[i]) != cudaSuccess)
-      throw std::runtime_error("cudaStreamCreate failed");
-    cublasSetStream(handles[i], streams[i]);
+  for (int i=0; i<n_streams; ++i) {
+    CUDA_CHECK(cudaStreamCreateWithFlags(&streams[i], cudaStreamNonBlocking));
+    CUBLAS_CHECK(cublasCreate(&handles[i]));
+    CUBLAS_CHECK(cublasSetStream(handles[i], streams[i]));
   }
   POP_RANGE;
 
-  for (int i = 0; i < n_streams; ++i) cudaStreamSynchronize(streams[i]);
-
-  // Perform Batched DGEMM
+  // ---- Scalars ----
   cuda_complex one  = cu_type_map<cxx_complex>::cast( 1., 0.);
   cuda_complex zero = cu_type_map<cxx_complex>::cast( 0., 0.);
-  PUSH_RANGE("Per-rank GEMMs (single g/Y per MPI rank)", 3);
-  // Dispatch GEMMs across MPI ranks: if at least 2 ranks, rank 0 runs GEMM1 and rank 1 runs GEMM2.
-  // If only one rank, run both GEMMs sequentially.
-  // Partition work across MPI ranks and round-robin streams/handles within each rank.
-  // Each rank will execute every `mpi_size`-th `t` value starting from its rank.
-  int local_task_counter = 0;
-  for (size_t k = 0; k < n_local_tasks; ++k) {
-    // map back to (s,t) if needed (not required for GEMM itself)
-    // int lin = my_tasks[k];
-    // int s = lin / (int)nts;
-    // int t = lin % (int)nts;
 
+  // ---- Enqueue GEMMs alternating streams, NO sync inside loop ----
+  PUSH_RANGE("Per-rank GEMMs (double-buffered, 2 streams)", 2);
+  for (size_t k = 0; k < n_local_tasks; ++k) {
     const size_t g_off = k * nao2;
 
-    // Pick a stream/handle
-    int which = local_task_counter % n_streams;
+    int which = (int)k & 1;                 // 0,1 alternating
     cublasHandle_t h = handles[which];
+    cuda_complex*   Y = Y_buf[which];
 
-    // Single GEMM per task:
-    //   (nao x nao) * (nao x nauxnao)  -> (nao x nauxnao)
-    // We keep your STRIDED_BATCHED wrapper for API uniformity; batchCount=1, strides as given.
-    if (GEMM_STRIDED_BATCHED(h,
-                             CUBLAS_OP_N, CUBLAS_OP_N,
-                             nao, nauxnao, nao,
-                             &one,
-                             g_stij_local + g_off, nao, nao2,
-                             VQ, nao, 0,
-                             &zero,
-                             Y, nao, nauxnao2,
-                             1) != CUBLAS_STATUS_SUCCESS) {
-      throw std::runtime_error("Rank " + std::to_string(rank) + " GEMM failed");
-    }
-
-    ++local_task_counter;
+    // Single GEMM per task (STRIDED_BATCHED kept for interface compatibility)
+    CUBLAS_CHECK(GEMM_STRIDED_BATCHED(
+      h, CUBLAS_OP_N, CUBLAS_OP_N,
+      (int)nao, (int)nauxnao, (int)nao,
+      &one,
+      g_stij_local + g_off, (int)nao, (long long)nao2,
+      VQ,                    (int)nao, 0,
+      &zero,
+      Y,                     (int)nao, (long long)nauxnao2,
+      1));
   }
+  POP_RANGE;
 
-  for (int i = 0; i < n_streams; ++i) cudaStreamSynchronize(streams[i]);
+  // ---- Join streams ONCE at the end (no serializing in the loop) ----
+  PUSH_RANGE("Join", 3);
+  for (int i=0; i<n_streams; ++i) CUDA_CHECK(cudaStreamSynchronize(streams[i]));
   POP_RANGE;
 
   MPI_Barrier(comm);
 
-  // --- cleanup ---
-  for (int i = 0; i < n_streams; ++i) {
+  // ---- Cleanup ----
+  for (int i=0; i<n_streams; ++i) {
     cublasDestroy(handles[i]);
     cudaStreamDestroy(streams[i]);
   }
-
   cudaFree(Pqk0);
   cudaFree(g_stij_local);
   cudaFree(VQ);
-  cudaFree(Y);
-
+  cudaFree(Y_buf[0]);
+  cudaFree(Y_buf[1]);
   cudaFree(pq_state);
   cudaFree(g_state);
   cudaFree(vq_state);
-  cudaFree(y_state);
+  cudaFree(y_state0);
+  cudaFree(y_state1);
 }
-
