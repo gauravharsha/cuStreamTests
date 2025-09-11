@@ -52,7 +52,12 @@ __global__ void init_random_complex(cuda_complex* data, curandState* states, int
   if (s != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("cuBLAS error"); \
 } while(0)
 
-void streams_and_handles(MPI_Comm comm) {
+void streams_and_handles(MPI_Comm comm,
+                         size_t ns,
+                         size_t nao,
+                         size_t naux,
+                         size_t nts,
+                         int n_streams) {
   // ---- MPI ranks (world + local) ----
   int rank=0, nprocs=1;
   MPI_Comm_rank(comm, &rank);
@@ -70,13 +75,9 @@ void streams_and_handles(MPI_Comm comm) {
   if (nDevices == 0) throw std::runtime_error("No CUDA devices");
   CUDA_CHECK(cudaSetDevice(local_rank % nDevices));
 
-  // ---- Problem sizes (same as your example) ----
-  const int n_streams = 2;
+  // ---- Problem sizes (now provided via args) ----
+  if (n_streams < 1) throw std::runtime_error("n_streams must be >= 1");
   PUSH_RANGE("Initialize", 0);
-  const size_t ns   = 2;
-  const size_t nao  = 54;
-  const size_t naux = 638;
-  const size_t nts  = 10;
 
   const size_t ntnaux2  = nts * naux * naux;     // (#tau) * naux^2
   const size_t nao2     = nao * nao;
@@ -146,11 +147,11 @@ void streams_and_handles(MPI_Comm comm) {
   cuda_complex zero = cu_type_map<cxx_complex>::cast( 0., 0.);
 
   // ---- Enqueue GEMMs alternating streams, NO sync inside loop ----
-  PUSH_RANGE("Per-rank GEMMs (double-buffered, 2 streams)", 2);
+  PUSH_RANGE("Per-rank GEMMs (streams)", 2);
   for (size_t k = 0; k < n_local_tasks; ++k) {
     const size_t g_off = k * nao2;
 
-    int which = (int)k & 1;                 // 0,1 alternating
+    int which = (int)(n_streams == 1 ? 0 : (k % (size_t)n_streams));
     cublasHandle_t h = handles[which];
     cuda_complex*   Y = Y_buf[which];
 
