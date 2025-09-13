@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
   int num_devices = 1;
   check_for_cuda(num_devices);
 
-  MPI_barrier(MPI_COMM_WORLD);
+  MPI_Barrier(MPI_COMM_WORLD);
   auto start = std::chrono::high_resolution_clock::now();
   try {
     if (world_rank == 0) {
