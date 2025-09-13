@@ -1,5 +1,4 @@
 #include <nvtx3/nvToolsExt.h>
-#include <mpi.h>
 #include <iostream>
 #include <vector>
 #include <stdexcept>
@@ -54,28 +53,11 @@ __global__ void init_random_complex(cuda_complex* data, curandState* states, int
   if (s != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("cuBLAS error"); \
 } while(0)
 
-void streams_and_handles(MPI_Comm comm,
-                         size_t ns,
-                         size_t nao,
-                         size_t naux,
-                         size_t nts,
-                         int n_streams) {
-  // ---- MPI ranks (world + local) ----
-  int rank=0, nprocs=1;
-  MPI_Comm_rank(comm, &rank);
-  MPI_Comm_size(comm, &nprocs);
-
-  // ---- Local rank → GPU binding ----
-  MPI_Comm node_comm;
-  MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_comm);
-  int local_rank=0;
-  MPI_Comm_rank(node_comm, &local_rank);
-  MPI_Comm_free(&node_comm);
-
+void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nts, int n_streams) {
   int nDevices=0;
   CUDA_CHECK(cudaGetDeviceCount(&nDevices));
   if (nDevices == 0) throw std::runtime_error("No CUDA devices");
-  CUDA_CHECK(cudaSetDevice(local_rank % nDevices));
+  CUDA_CHECK(cudaSetDevice(0));
 
   if (n_streams < 1) throw std::runtime_error("n_streams must be >= 1");
 
@@ -140,6 +122,11 @@ void streams_and_handles(MPI_Comm comm,
   cuda_complex one  = cu_type_map<cxx_complex>::cast( 1., 0.);
   cuda_complex zero = cu_type_map<cxx_complex>::cast( 0., 0.);
 
+  // ---- Synchronize the streams before starting ZGEMMs ----
+  PUSH_RANGE("Synchronize", 3);
+  for (int i=0; i<n_streams; ++i) CUDA_CHECK(cudaStreamSynchronize(streams[i]));
+  POP_RANGE;
+
   // ---- Enqueue GEMMs alternating streams, NO sync inside loop ----
   PUSH_RANGE("Per-rank GEMMs (streams)", 2);
   for (int s = 0; s < ns; ++s) {
@@ -168,9 +155,8 @@ void streams_and_handles(MPI_Comm comm,
   POP_RANGE;
 
   // ---- Join streams ONCE at the end (no serializing in the loop) ----
-  PUSH_RANGE("MPI Barrier", 3);
+  PUSH_RANGE("Synchronize", 3);
   for (int i=0; i<n_streams; ++i) CUDA_CHECK(cudaStreamSynchronize(streams[i]));
-  MPI_Barrier(comm);
   POP_RANGE;
 
   // ---- Cleanup ----

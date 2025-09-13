@@ -138,12 +138,13 @@ int main(int argc, char** argv) {
     }
 
     // Your existing entry point
-    streams_and_handles(MPI_COMM_WORLD, cfg.ns, cfg.nao, cfg.naux, cfg.nts, cfg.n_streams);
+    streams_and_handles(world_rank, cfg.ns, cfg.nao, cfg.naux, cfg.nts, cfg.n_streams);
   } catch (const std::exception& e) {
     if (world_rank == 0) fprintf(stderr, "Error: %s\n", e.what());
     MPI_Abort(MPI_COMM_WORLD, -1);
   }
 
+  MPI_Barrier(MPI_COMM_WORLD);
   MPI_Finalize();
   return 0;
 }
