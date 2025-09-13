@@ -4,7 +4,6 @@
 #include "cuda_types_map.h"
 #include <cstring>
 #include "cublas_routines_prec.h"
-#include <mpi.h>
 
 using cxx_base_type = double;
 using cxx_type = std::complex<double>;
