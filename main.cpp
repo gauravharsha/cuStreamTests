@@ -2,6 +2,7 @@
 #include <exception>
 #include <cstdlib>
 #include <iostream>
+#include <chrono>
 #include <string>
 #include <cstring>
 #include <unordered_map>
@@ -128,6 +129,8 @@ int main(int argc, char** argv) {
   int num_devices = 1;
   check_for_cuda(num_devices);
 
+  MPI_barrier(MPI_COMM_WORLD);
+  auto start = std::chrono::high_resolution_clock::now();
   try {
     if (world_rank == 0) {
       std::cout << "Config: ns=" << cfg.ns
@@ -145,6 +148,11 @@ int main(int argc, char** argv) {
   }
 
   MPI_Barrier(MPI_COMM_WORLD);
+  auto end = std::chrono::high_resolution_clock::now();
+  auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+  if (!world_rank) {
+    std::cout << "Completed in " << duration_ms << " ms" << std::endl;
+  }
   MPI_Finalize();
   return 0;
 }
