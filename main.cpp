@@ -21,7 +21,7 @@ inline void print_help(const char* prog) {
     "  --nao <u>        Number of AOs (default 54)\n"
     "  --naux <u>       Number of aux functions (default 638)\n"
     "  --nts <u>        Number of time slices (default 10)\n"
-    "  --nstreams <int> Number of CUDA streams per rank (default 2)\n"
+    "  --nstreams <int> Number of CUDA streams per rank (default 1)\n"
     "  -h, --help       Show this help and exit\n";
 }
 
@@ -57,7 +57,7 @@ struct Config {
   size_t nao = 54;
   size_t naux = 638;
   size_t nts = 10;
-  int n_streams = 2;
+  int n_streams = 1;
 };
 
 bool parse_args(int argc, char** argv, Config& cfg, bool& show_help) {
