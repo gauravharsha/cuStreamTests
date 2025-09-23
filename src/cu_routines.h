@@ -15,4 +15,15 @@ using cuda_complex = cu_type_map<std::complex<double>>::cuda_type;
 
 
 __global__ void init_random_complex(cuda_complex* data, curandState* states, int n, unsigned long seed);
-void streams_and_handles();
+						
+/**
+ * @brief Run the stream/handle test with configurable sizes and stream count 
+ * 
+ * @param rank rank of the MPI process
+ * @param ns number of spins (tasks dimension 1)
+ * @param nao number of atomic orbitals (matrix dimension)
+ * @param naux number of auxiliary functions
+ * @param nts number of tau points (tasks dimension 2)
+ * @param n_streams number of CUDA streams/handles to use (>=1)
+ */
+void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nts, int n_streams);

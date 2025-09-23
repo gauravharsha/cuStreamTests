@@ -1,11 +1,20 @@
 #include <nvtx3/nvToolsExt.h>
+#include <iostream>
+#include <vector>
+#include <stdexcept>
+#include <string>
+#include <ctime>
+#include <cublas_v2.h>
 #include "cu_routines.h"
 
 const uint32_t colors[] = { 0xff00ff00, 0xff0000ff, 0xffffff00, 0xffff00ff, 0xff00ffff, 0xffff0000, 0xffffffff };
 const int num_colors = sizeof(colors)/sizeof(uint32_t);
 
+// Global variables for NVTX coloring
+static int nvtx_rank_color_offset = 0;
+
 #define PUSH_RANGE(name,cid) { \
-  int color_id = cid; \
+  int color_id = (cid) + nvtx_rank_color_offset; \
   color_id = color_id%num_colors;\
   nvtxEventAttributes_t eventAttrib = {0}; \
   eventAttrib.version = NVTX_VERSION; \
@@ -34,123 +43,133 @@ __global__ void init_random_complex(cuda_complex* data, curandState* states, int
     data[id] = make_cuDoubleComplex(real, imag);
 }
 
+#define CUDA_CHECK(cmd) do { \
+  cudaError_t e = (cmd); \
+  if (e != cudaSuccess) throw std::runtime_error(std::string("CUDA error: ")+cudaGetErrorString(e)); \
+} while(0)
 
-void streams_and_handles() {
-  const int n_streams = 2;
+#define CUBLAS_CHECK(cmd) do { \
+  cublasStatus_t s = (cmd); \
+  if (s != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("cuBLAS error"); \
+} while(0)
+
+void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nts, int n_streams) {
+  int nDevices=0;
+  CUDA_CHECK(cudaGetDeviceCount(&nDevices));
+  if (nDevices == 0) throw std::runtime_error("No CUDA devices");
+  CUDA_CHECK(cudaSetDevice(0));
+
+  if (n_streams < 1) throw std::runtime_error("n_streams must be >= 1");
+
+  // Set NVTX color offset per-rank for better visualization
+  nvtx_rank_color_offset = (rank % num_colors);
+
+  // ---- Derived sizes ----
+  const size_t ntnao2 = nts * nao * nao;
+  const size_t ntnaux2  = nts * naux * naux;     // (#tau) * naux^2
+  const size_t nao2     = nao * nao;
+  const size_t nauxnao  = naux * nao;
+  const size_t nauxnao2 = naux * nao * nao;
+
+  // ---- Task partition: round-robin (good balance) ----
   PUSH_RANGE("Initialize", 0);
-  const size_t ns = 2;
-  const size_t nao = 54;
-  const size_t naux = 638;
-  const size_t nts = 10;
-  size_t ntnaux2 = nts * naux * naux;
-  size_t ntnao2 = nts * nao * nao;
-  size_t nauxnao2 = naux * nao * nao;
+  cuda_complex *Pqk0=nullptr, *g_stij=nullptr, *VQ=nullptr, *Y=nullptr;
+  CUDA_CHECK(cudaMalloc(&Pqk0,   ntnaux2 * sizeof(cuda_complex)));
+  CUDA_CHECK(cudaMalloc(&g_stij, ns * ntnao2 * sizeof(cuda_complex)));
+  CUDA_CHECK(cudaMalloc(&VQ,     nauxnao2 * sizeof(cuda_complex)));
+  CUDA_CHECK(cudaMalloc(&Y,      nauxnao2 * sizeof(cuda_complex)));
 
-  // allocate memory for stuff
-  cuda_complex* Pqk0; // polarization
-  cuda_complex* g1_stij;
-  cuda_complex* V1Q;
-  cuda_complex* g2_stij;
-  cuda_complex* V2Q;
-  cuda_complex* Y1;
-  cuda_complex* Y2;
-  if (cudaMalloc(&Pqk0, ntnaux2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("failure allocating Pq0");
-  if (cudaMalloc(&g1_stij, ns * ntnao2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("failure allocating g1_stij on device");
-  if (cudaMalloc(&V1Q, nauxnao2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("failure allocating V1Q on device");
-  if (cudaMalloc(&g2_stij, ns * ntnao2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("failure allocating g2_stij on device");
-  if (cudaMalloc(&V2Q, nauxnao2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("failure allocating V2Q on device");
-  if (cudaMalloc(&Y1, nauxnao2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("failure allocating Y1 on device");
-  if (cudaMalloc(&Y2, nauxnao2 * sizeof(cuda_complex)) != cudaSuccess)
-    throw std::runtime_error("failure allocating Y2 on device");
+  // ---- RNG states (only for the buffers we own) ----
+  curandState *pq_state=nullptr, *g_state=nullptr, *vq_state=nullptr, *y_state=nullptr;
+  CUDA_CHECK(cudaMalloc(&pq_state, ntnaux2 * sizeof(curandState)));
+  CUDA_CHECK(cudaMalloc(&g_state,  ns * ntnao2 * sizeof(curandState)));
+  CUDA_CHECK(cudaMalloc(&vq_state, nauxnao2 * sizeof(curandState)));
+  CUDA_CHECK(cudaMalloc(&y_state,  nauxnao2 * sizeof(curandState)));
 
-  // Random initialize
-  curandState* pq_state;
-  curandState* g_state;
-  curandState* vq_state;
-  curandState* y1_state;
-  curandState* y2_state;
+  // ---- Random init (rank-unique seed) ----
+  const int threads = 256;
+  unsigned long seed = (unsigned long)time(NULL) + 1337ul * (unsigned long)rank;
 
-  if (cudaMalloc(&pq_state, ntnaux2 * sizeof(curandState)))
-    throw std::runtime_error("failure allocating Pq0");
-  if (cudaMalloc(&g_state, ns * ntnao2 * sizeof(curandState)) != cudaSuccess)
-    throw std::runtime_error("failure allocating g1_stij on device");
-  if (cudaMalloc(&vq_state, nauxnao2 * sizeof(curandState)) != cudaSuccess)
-    throw std::runtime_error("failure allocating V1Q on device");
-  if (cudaMalloc(&y1_state, nauxnao2 * sizeof(curandState)) != cudaSuccess)
-    throw std::runtime_error("failure allocating Y1 on device");
-  if (cudaMalloc(&y2_state, nauxnao2 * sizeof(curandState)) != cudaSuccess)
-    throw std::runtime_error("failure allocating Y2 on device");
+  int blocks = (int)((ntnaux2  + threads - 1) / threads);
+  init_random_complex<<<blocks, threads>>>(Pqk0, pq_state, ntnaux2, seed);
 
-  int threads = 256;
-  int blocks = (ntnaux2 + threads - 1) / threads;
-  init_random_complex<<<blocks, threads>>>(Pqk0, pq_state, ntnaux2, time(NULL));
-  blocks = (ns * ntnao2 + threads - 1) / threads;
-  init_random_complex<<<blocks, threads>>>(g1_stij, g_state, ntnao2, time(NULL));
-  init_random_complex<<<blocks, threads>>>(g2_stij, g_state, ntnao2, time(NULL));
-  blocks = (nauxnao2 + threads - 1) / threads;
-  init_random_complex<<<blocks, threads>>>(V1Q, vq_state, nauxnao2, time(NULL));
-  init_random_complex<<<blocks, threads>>>(V2Q, vq_state, nauxnao2, time(NULL));
-  blocks = (nauxnao2 + threads - 1) / threads;
-  init_random_complex<<<blocks, threads>>>(Y1, y1_state, nauxnao2, time(NULL));
-  init_random_complex<<<blocks, threads>>>(Y2, y2_state, nauxnao2, time(NULL));
-  std::cout << "initialized completed" << std::endl;
+  blocks = (int)((ns * ntnao2 + threads - 1) / threads);
+  init_random_complex<<<blocks, threads>>>(g_stij, g_state, ntnao2, seed+1);
+
+  blocks = (int)((nauxnao2 + threads - 1) / threads);
+  init_random_complex<<<blocks, threads>>>(VQ, vq_state, nauxnao2, seed+2);
+
+  blocks = (int)((nauxnao2 + threads - 1) / threads);
+  init_random_complex<<<blocks, threads>>>(Y, y_state, nauxnao2, seed+3);
+
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
+  if (rank == 0) std::cout << "initialized completed\n";
   POP_RANGE;
 
-
-  // Create streams and handles
-  PUSH_RANGE("Create 2 streams and handles", 1);
-  std::vector<cudaStream_t> _streams(n_streams);
-  std::vector<cublasHandle_t> _handles(n_streams);
-  for (int i=0; i<n_streams; i++) {
-    if (cublasCreate(&_handles[i]) != CUBLAS_STATUS_SUCCESS)
-      throw std::runtime_error("Rank " + std::to_string(i) + ": error initializing cublas");
-    if (cudaStreamCreate(&_streams[i]) != CUBLAS_STATUS_SUCCESS)
-      throw std::runtime_error("Rank " + std::to_string(i) + ": error initializing cuda Stream");
-    cublasSetStream(_handles[i], _streams[i]);
+  // ---- Create NON-BLOCKING streams & 1 handle per stream ----
+  PUSH_RANGE("Create streams and handles", 1);
+  std::vector<cudaStream_t> streams(n_streams);
+  std::vector<cublasHandle_t> handles(n_streams);
+  for (int i=0; i<n_streams; ++i) {
+    CUDA_CHECK(cudaStreamCreateWithFlags(&streams[i], cudaStreamNonBlocking));
+    CUBLAS_CHECK(cublasCreate(&handles[i]));
+    CUBLAS_CHECK(cublasSetStream(handles[i], streams[i]));
   }
   POP_RANGE;
 
+  // ---- Scalars ----
+  cuda_complex one  = cu_type_map<cxx_complex>::cast( 1., 0.);
+  cuda_complex zero = cu_type_map<cxx_complex>::cast( 0., 0.);
 
-  for (int i=0; i<n_streams; i++) cudaStreamSynchronize(_streams[i]);
-  // Perform Batched DGEMM
-  PUSH_RANGE("Perform 2 GEMM calls", 3);
-  cuda_complex  one     = cu_type_map<cxx_complex>::cast(1., 0.);
-  cuda_complex  zero    = cu_type_map<cxx_complex>::cast(0., 0.);
-  cuda_complex  m1      = cu_type_map<cxx_complex>::cast(-1., 0.);
-  // cuda_complex* Y1t_Qin = X1t_tmQ_;  // name change, reuse memory
-  // cuda_complex* Y2t_inP = X2t_Ptm_;  // name change, reuse memory
-  size_t nauxnao = naux * nao;
-  size_t nao2 = nao * nao;
-  PUSH_RANGE("GEMM 1", 4);
+  // ---- Synchronize the streams before starting ZGEMMs ----
+  PUSH_RANGE("Synchronize", 3);
+  for (int i=0; i<n_streams; ++i) CUDA_CHECK(cudaStreamSynchronize(streams[i]));
+  POP_RANGE;
+
+  // ---- Enqueue GEMMs alternating streams, NO sync inside loop ----
+  PUSH_RANGE("Per-rank GEMMs (streams)", 2);
   for (int s = 0; s < ns; ++s) {
     for (int t = 0; t < nts; t += 1) {
       int st0      = s * nts + t;
-      if (GEMM_STRIDED_BATCHED(_handles[0], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g1_stij + st0 * nao2, nao,
-                              nao2, V1Q, nao, 0, &zero, Y1, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
-        throw std::runtime_error("GEMM_STRIDED_BATCHED fails on gw_qkpt.compute_second_tau_contraction().");
-      }
-    }
-  }
-  POP_RANGE;
-  PUSH_RANGE("GEMM 2", 4);
-  for (int s = 0; s < ns; ++s) {
-    for (int t = 0; t < nts; t += 1) {
-      int st1      = s * nts + t;
-      if (GEMM_STRIDED_BATCHED(_handles[1], CUBLAS_OP_N, CUBLAS_OP_N, nao, nauxnao, nao, &one, g2_stij + st1 * nao2, nao,
-                              nao2, V2Q, nao, 0, &zero, Y2, nao, nauxnao2, 1) != CUBLAS_STATUS_SUCCESS) {
-        throw std::runtime_error("GEMM_STRIDED_BATCHED fails on gw_qkpt.compute_second_tau_contraction().");
-      }
-    }
-  }
-  for (int i=0; i<n_streams; i++) cudaStreamSynchronize(_streams[i]);
-  // Synchronize stream
-  POP_RANGE;
-  POP_RANGE;
-}
 
+      // Select stream/handle in round-robin across tasks
+      size_t task_idx = (size_t)st0;
+      int which = (int)(n_streams == 1 ? 0 : (task_idx % (size_t)n_streams));
+      cublasHandle_t h = handles[which];
+
+      // Single GEMM per task (STRIDED_BATCHED kept for interface compatibility)
+      // Offsets: each (s,t) slice occupies contiguous blocks in g_stij and Y
+      CUBLAS_CHECK(GEMM_STRIDED_BATCHED(
+        h, CUBLAS_OP_N, CUBLAS_OP_N,
+        (int)nao, (int)nauxnao, (int)nao,
+        &one,
+        g_stij + (size_t)st0 * nao2, (int)nao, (long long)nao2,
+        VQ, (int)nao, 0,
+        &zero,
+        Y, (int)nao, (long long)nauxnao2,
+        1
+      ));
+    }
+  }
+  POP_RANGE;
+
+  // ---- Join streams ONCE at the end (no serializing in the loop) ----
+  PUSH_RANGE("Synchronize", 3);
+  for (int i=0; i<n_streams; ++i) CUDA_CHECK(cudaStreamSynchronize(streams[i]));
+  POP_RANGE;
+
+  // ---- Cleanup ----
+  for (int i=0; i<n_streams; ++i) {
+    cublasDestroy(handles[i]);
+    cudaStreamDestroy(streams[i]);
+  }
+  cudaFree(Pqk0);
+  cudaFree(g_stij);
+  cudaFree(VQ);
+  cudaFree(Y);
+  cudaFree(pq_state);
+  cudaFree(g_state);
+  cudaFree(vq_state);
+  cudaFree(y_state);
+}
