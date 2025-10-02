@@ -157,6 +157,7 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
   // ---- Join streams ONCE at the end (no serializing in the loop) ----
   PUSH_RANGE("Synchronize", 3);
   for (int i=0; i<n_streams; ++i) CUDA_CHECK(cudaStreamSynchronize(streams[i]));
+  CUDA_CHECK(cudaDeviceSynchronize());
   POP_RANGE;
 
   // ---- Cleanup ----
