@@ -1,4 +1,5 @@
 #include <nvtx3/nvToolsExt.h>
+#include <chrono>
 #include <iostream>
 #include <vector>
 #include <stdexcept>
@@ -125,9 +126,13 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
   // ---- Synchronize the streams before starting ZGEMMs ----
   PUSH_RANGE("Synchronize", 3);
   for (int i=0; i<n_streams; ++i) CUDA_CHECK(cudaStreamSynchronize(streams[i]));
+  CUDA_CHECK(cudaDeviceSynchronize());
   POP_RANGE;
 
+  auto total_flop_count = (double)ns * (double)nts * 8. * (double)nao * (double)nauxnao * (double)nao;
+
   // ---- Enqueue GEMMs alternating streams, NO sync inside loop ----
+  auto start = std::chrono::high_resolution_clock::now();
   PUSH_RANGE("Per-rank GEMMs (streams)", 2);
   for (int s = 0; s < ns; ++s) {
     for (int t = 0; t < nts; t += 1) {
@@ -153,12 +158,18 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
     }
   }
   POP_RANGE;
+  auto end = std::chrono::high_resolution_clock::now();
 
   // ---- Join streams ONCE at the end (no serializing in the loop) ----
   PUSH_RANGE("Synchronize", 3);
   for (int i=0; i<n_streams; ++i) CUDA_CHECK(cudaStreamSynchronize(streams[i]));
   CUDA_CHECK(cudaDeviceSynchronize());
   POP_RANGE;
+
+  std::chrono::duration<double> elapsed = end - start;
+  std::cout << "GEMMs on Rank " << rank << " completed in " << elapsed.count() << " seconds" << std::endl;
+  std::cout << "GEMM rate on Rank " << rank << ": " << (double)ns*(double)nts/elapsed.count() << " GEMMs/second" << std::endl;
+  std::cout << "FLOP rate on Rank " << rank << ": " << total_flop_count / elapsed.count() / 1e9 << " Giga FLOPs/second" << std::endl;
 
   // ---- Cleanup ----
   for (int i=0; i<n_streams; ++i) {
