@@ -134,27 +134,30 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
   // ---- Enqueue GEMMs alternating streams, NO sync inside loop ----
   auto start = std::chrono::high_resolution_clock::now();
   PUSH_RANGE("Per-rank GEMMs (streams)", 2);
-  for (int s = 0; s < ns; ++s) {
-    for (int t = 0; t < nts; t += 1) {
-      int st0      = s * nts + t;
+  int n_repeat = 1000;
+  for (int repeat = 0; repeat < n_repeat; repeat++) {
+    for (int s = 0; s < ns; ++s) {
+      for (int t = 0; t < nts; t += 1) {
+        int st0      = s * nts + t;
 
-      // Select stream/handle in round-robin across tasks
-      size_t task_idx = (size_t)st0;
-      int which = (int)(n_streams == 1 ? 0 : (task_idx % (size_t)n_streams));
-      cublasHandle_t h = handles[which];
+        // Select stream/handle in round-robin across tasks
+        size_t task_idx = (size_t)st0;
+        int which = (int)(n_streams == 1 ? 0 : (task_idx % (size_t)n_streams));
+        cublasHandle_t h = handles[which];
 
-      // Single GEMM per task (STRIDED_BATCHED kept for interface compatibility)
-      // Offsets: each (s,t) slice occupies contiguous blocks in g_stij and Y
-      CUBLAS_CHECK(GEMM_STRIDED_BATCHED(
-        h, CUBLAS_OP_N, CUBLAS_OP_N,
-        (int)nao, (int)nauxnao, (int)nao,
-        &one,
-        g_stij + (size_t)st0 * nao2, (int)nao, (long long)nao2,
-        VQ, (int)nao, 0,
-        &zero,
-        Y, (int)nao, (long long)nauxnao2,
-        1
-      ));
+        // Single GEMM per task (STRIDED_BATCHED kept for interface compatibility)
+        // Offsets: each (s,t) slice occupies contiguous blocks in g_stij and Y
+        CUBLAS_CHECK(GEMM_STRIDED_BATCHED(
+          h, CUBLAS_OP_N, CUBLAS_OP_N,
+          (int)nao, (int)nauxnao, (int)nao,
+          &one,
+          g_stij + (size_t)st0 * nao2, (int)nao, (long long)nao2,
+          VQ, (int)nao, 0,
+          &zero,
+          Y, (int)nao, (long long)nauxnao2,
+          1
+        ));
+      }
     }
   }
   POP_RANGE;
@@ -169,7 +172,7 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
   std::chrono::duration<double> elapsed = end - start;
   std::cout << "GEMMs on Rank " << rank << " completed in " << elapsed.count() << " seconds" << std::endl;
   std::cout << "GEMM rate on Rank " << rank << ": " << (double)ns*(double)nts/elapsed.count() << " GEMMs/second" << std::endl;
-  std::cout << "FLOP rate on Rank " << rank << ": " << total_flop_count / elapsed.count() / 1e9 << " Giga FLOPs/second" << std::endl;
+  std::cout << "FLOP rate on Rank " << rank << ": " << n_repeat * total_flop_count / elapsed.count() / 1e9 << " Giga FLOPs/second" << std::endl;
 
   // ---- Cleanup ----
   for (int i=0; i<n_streams; ++i) {
