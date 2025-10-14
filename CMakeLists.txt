@@ -27,6 +27,7 @@ if(NOT DEFINED CMAKE_CUDA_STANDARD)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 endif()
 
+find_package(MPI REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(BLAS)
 if (BLAS_FOUND)
@@ -46,4 +47,4 @@ add_green_dependency(green-ndarray)
 add_subdirectory(src)
 
 add_executable(main.exe main.cpp)
-target_link_libraries(main.exe PUBLIC accel-lib)
+target_link_libraries(main.exe PRIVATE accel-lib MPI::MPI_CXX)
