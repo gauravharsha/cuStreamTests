@@ -12,11 +12,11 @@ make install
 
 ## Usage
 The code allows you to tweak a whole bunch of parameters that are useful in a practical calculation:
-* `ns`: Number of spins (default 2)\n"
-* `nao`: Number of AOs (default 54)\n"
-* `naux`: Number of aux functions (default 638)\n"
-* `nts`: Number of time slices (default 10)\n"
-* `nstreams`: Number of CUDA streams per rank (default 1)\n"
+* `ns`: Number of spins (default 2)
+* `nao`: Number of AOs (default 54)
+* `naux`: Number of aux functions (default 638)
+* `nts`: Number of time slices (default 10)
+* `nstreams`: Number of CUDA streams per rank (default 1)
 
 For most cases, we would like to vary `naux`, `nts` and `nao`. It is best to keep 1 stream per MPI rank.
 
