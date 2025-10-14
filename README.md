@@ -35,7 +35,8 @@ For most cases, we would like to vary `naux`, `nts` and `nao`. It is best to kee
       "$@"
     fi
     ```
-    and then run
+    This profiles only the process with rank 0. 
+    We can then run the job
     ```bash
     #!/bin/bash
     #SBATCH ... accounting options ...
@@ -48,7 +49,8 @@ For most cases, we would like to vary `naux`, `nts` and `nao`. It is best to kee
     ##--Commented out--
 
     #Define environment variables
-    export SLURM_CPU_BIND='cores'
+    export SLURM_CPU_BIND="cores"
+    export Bin="path/to/main.exe"
 
     #Print Node info
     echo "My job ran on "
@@ -56,8 +58,13 @@ For most cases, we would like to vary `naux`, `nts` and `nao`. It is best to kee
     echo "Start Date/Time"
     date
 
-    #Perform GW calculation
-    srun ./main.exe --naux 300 --nts 100 --nstreams 1
+    # Profile for Rank 0 only
+    # srun nsys_profile.sh profile ./main.exe --naux 300 --nts 100 --nstreams 1
+
+    # Profile for all Ranks
+    srun nsys profile -o aux300_report_rank%q{SLURM_PROCID} \
+      -t cuda,nvtx,cublas --cuda-memory-usage=true \
+      $Bin/main.exe --naux 300 --nts 100 --nsreams 1
 
     #End of job info
     echo "End 
