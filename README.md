@@ -1,5 +1,6 @@
-# Mock-up code for testing concurrency in CUDA Streams
------
+# cuStreamTests
+
+This repository is a minimal code that recreates the essential steps from the [Green-Phys/GREEN-GPU](https://github.com/green-phys/green-gpu.git) for testing concurrency of CUBLAS calls from different CUDA Streams.
 
 ## Installation
 ```bash
