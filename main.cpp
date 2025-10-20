@@ -22,6 +22,7 @@ inline void print_help(const char* prog) {
     "  --naux <u>       Number of aux functions (default 638)\n"
     "  --nts <u>        Number of time slices (default 10)\n"
     "  --nstreams <int> Number of CUDA streams per rank (default 1)\n"
+    "  --nt_batch <int> Number of tau points to process in a batch (default 1)\n"
     "  -h, --help       Show this help and exit\n";
 }
 
@@ -57,6 +58,7 @@ struct Config {
   size_t nao = 54;
   size_t naux = 638;
   size_t nts = 10;
+  size_t nt_batch = 1;
   int n_streams = 1;
 };
 
@@ -96,6 +98,10 @@ bool parse_args(int argc, char** argv, Config& cfg, bool& show_help) {
       if (!need_val(i)) return false;
       int v; if (!parse_int(argv[++i], v) || v <= 0) { std::cerr << "Invalid --nstreams\n"; return false; }
       cfg.n_streams = v;
+    } else if (key == "--nt_batch" || key == "--ntbatch") {
+      if (!need_val(i)) return false;
+      size_t v; if (!parse_uint(argv[++i], v)) { std::cerr << "Invalid --nt_batch\n"; return false; }
+      cfg.nt_batch = v;
     } else {
       std::cerr << "Unknown option: " << key << "\n";
       return false;
@@ -137,11 +143,12 @@ int main(int argc, char** argv) {
                 << ", nao=" << cfg.nao
                 << ", naux=" << cfg.naux
                 << ", nts=" << cfg.nts
-                << ", n_streams=" << cfg.n_streams << std::endl;
+                << ", n_streams=" << cfg.n_streams
+                << ", nt_batch=" << cfg.nt_batch << std::endl;
     }
 
     // Your existing entry point
-    streams_and_handles(world_rank, cfg.ns, cfg.nao, cfg.naux, cfg.nts, cfg.n_streams);
+    streams_and_handles(world_rank, cfg.ns, cfg.nao, cfg.naux, cfg.nts, cfg.n_streams, cfg.nt_batch);
   } catch (const std::exception& e) {
     if (world_rank == 0) fprintf(stderr, "Error: %s\n", e.what());
     MPI_Abort(MPI_COMM_WORLD, -1);

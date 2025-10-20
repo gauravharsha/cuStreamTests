@@ -54,7 +54,7 @@ __global__ void init_random_complex(cuda_complex* data, curandState* states, int
   if (s != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("cuBLAS error"); \
 } while(0)
 
-void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nts, int n_streams) {
+void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nts, int n_streams, int nt_batch) {
   int nDevices=0;
   CUDA_CHECK(cudaGetDeviceCount(&nDevices));
   if (nDevices == 0) throw std::runtime_error("No CUDA devices");
@@ -137,8 +137,9 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
   int n_repeat = 1000;
   for (int repeat = 0; repeat < n_repeat; repeat++) {
     for (int s = 0; s < ns; ++s) {
-      for (int t = 0; t < nts; t += 1) {
+      for (int t = 0; t < nts; t += nt_batch) {
         int st0      = s * nts + t;
+        int nt_mult  = std::min(nt_batch, nts / 2 - t);
 
         // Select stream/handle in round-robin across tasks
         size_t task_idx = (size_t)st0;
@@ -155,7 +156,7 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
           VQ, (int)nao, 0,
           &zero,
           Y, (int)nao, (long long)nauxnao2,
-          1
+          nt_mult
         ));
       }
     }
