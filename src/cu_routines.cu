@@ -134,12 +134,12 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
   // ---- Enqueue GEMMs alternating streams, NO sync inside loop ----
   auto start = std::chrono::high_resolution_clock::now();
   PUSH_RANGE("Per-rank GEMMs (streams)", 2);
-  int n_repeat = 1000;
+  int n_repeat = 10;
   for (int repeat = 0; repeat < n_repeat; repeat++) {
     for (int s = 0; s < ns; ++s) {
       for (int t = 0; t < nts; t += nt_batch) {
         int st0      = s * nts + t;
-        int nt_mult  = std::min(static_cast<int>nt_batch, static_cast<int>(nts / 2) - t);
+        int nt_mult  = std::min(static_cast<int>(nt_batch), static_cast<int>(nts / 2) - t);
 
         // Select stream/handle in round-robin across tasks
         size_t task_idx = (size_t)st0;
