@@ -27,4 +27,4 @@ __global__ void init_random_complex(cuda_complex* data, curandState* states, int
  * @param n_streams number of CUDA streams/handles to use (>=1)
  * @param nt_batch number of tau points to process in a batch
  */
-void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nts, int n_streams, int nt_batch);
+void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nts, int n_streams, size_t nt_batch);
