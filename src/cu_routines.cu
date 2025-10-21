@@ -74,25 +74,20 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
 
   // ---- Task partition: round-robin (good balance) ----
   PUSH_RANGE("Initialize", 0);
-  cuda_complex *Pqk0=nullptr, *g_stij=nullptr, *VQ=nullptr, *Y=nullptr;
-  CUDA_CHECK(cudaMalloc(&Pqk0,   ntnaux2 * sizeof(cuda_complex)));
+  cuda_complex *g_stij=nullptr, *VQ=nullptr, *Y=nullptr;
   CUDA_CHECK(cudaMalloc(&g_stij, ns * ntnao2 * sizeof(cuda_complex)));
   CUDA_CHECK(cudaMalloc(&VQ,     nauxnao2 * sizeof(cuda_complex)));
-  CUDA_CHECK(cudaMalloc(&Y,      nauxnao2 * sizeof(cuda_complex)));
+  CUDA_CHECK(cudaMalloc(&Y,      nt_batch * nauxnao2 * sizeof(cuda_complex)));
 
   // ---- RNG states (only for the buffers we own) ----
-  curandState *pq_state=nullptr, *g_state=nullptr, *vq_state=nullptr, *y_state=nullptr;
-  CUDA_CHECK(cudaMalloc(&pq_state, ntnaux2 * sizeof(curandState)));
+  curandState *g_state=nullptr, *vq_state=nullptr, *y_state=nullptr;
   CUDA_CHECK(cudaMalloc(&g_state,  ns * ntnao2 * sizeof(curandState)));
   CUDA_CHECK(cudaMalloc(&vq_state, nauxnao2 * sizeof(curandState)));
-  CUDA_CHECK(cudaMalloc(&y_state,  nauxnao2 * sizeof(curandState)));
+  CUDA_CHECK(cudaMalloc(&y_state,  nt_batch * nauxnao2 * sizeof(curandState)));
 
   // ---- Random init (rank-unique seed) ----
   const int threads = 256;
   unsigned long seed = (unsigned long)time(NULL) + 1337ul * (unsigned long)rank;
-
-  int blocks = (int)((ntnaux2  + threads - 1) / threads);
-  init_random_complex<<<blocks, threads>>>(Pqk0, pq_state, ntnaux2, seed);
 
   blocks = (int)((ns * ntnao2 + threads - 1) / threads);
   init_random_complex<<<blocks, threads>>>(g_stij, g_state, ntnao2, seed+1);
@@ -101,7 +96,7 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
   init_random_complex<<<blocks, threads>>>(VQ, vq_state, nauxnao2, seed+2);
 
   blocks = (int)((nauxnao2 + threads - 1) / threads);
-  init_random_complex<<<blocks, threads>>>(Y, y_state, nauxnao2, seed+3);
+  init_random_complex<<<blocks, threads>>>(Y, y_state, nt_batch * nauxnao2, seed+3);
 
   CUDA_CHECK(cudaGetLastError());
   CUDA_CHECK(cudaDeviceSynchronize());
@@ -180,11 +175,9 @@ void streams_and_handles(int rank, size_t ns, size_t nao, size_t naux, size_t nt
     cublasDestroy(handles[i]);
     cudaStreamDestroy(streams[i]);
   }
-  cudaFree(Pqk0);
   cudaFree(g_stij);
   cudaFree(VQ);
   cudaFree(Y);
-  cudaFree(pq_state);
   cudaFree(g_state);
   cudaFree(vq_state);
   cudaFree(y_state);
